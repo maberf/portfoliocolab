@@ -1,0 +1,451 @@
+# %% id="aWziTwaTSU6f"
+import pandas as pd
+import numpy as np
+import yfinance as yf
+import datetime as dt
+
+
+# %% id="_gJetvABQStP"
+# yahoo finance reading historic series function
+def yfSeries(list, period, pricetype):
+    """
+    function download yahoo finance historic seris and load into pandas dataframe
+    args:
+      list with assets tickers - [type]: [list]
+      period in years such as '1y' or '2y' - [type]: [str]
+      pricetype 'Close' or 'Adj Close' - [type]: [str]
+    returns:
+      [type]: [pandas.core.frame.DataFrame]
+    """
+    
+    # series reading
+    df = yf.download(list, period=period, auto_adjust=True)[pricetype]
+    # remove timezone from index
+    df.index = pd.to_datetime(df.index).tz_localize(None)
+    # Excluding .SA, renaming ^BVSP to IBOV, ^GSPC to SP500
+    df.columns = [col.replace('.SA', '') for col in df.columns]
+    df.columns = [col.replace('^BVSP', 'IBOV') for col in df.columns]
+    df.columns = [col.replace('^GSPC', 'SP500') for col in df.columns]
+    df.columns = [col.replace('USDBRL=X', 'USDBRL') for col in df.columns]
+
+    # dataframe organization
+    # priorized columns list
+    columns_priorized = ['IBOV','XFIX11','SP500','USRT','USDBRL']
+    # priorized coluns filter
+    priorized_existing = [col for col in columns_priorized if col in df.columns]
+    # other columns list
+    columns_others = [col for col in df.columns if col not in priorized_existing]
+    # dataframe new order
+    new_order = priorized_existing + columns_others
+    # reindex organization
+    df = df.reindex(columns=new_order)
+
+    # return dataframe
+    return df
+
+
+# %%
+def yfStock(ticker_list):
+    """
+    function extract yahoo finance stock tickers fundamentalists data
+    args:
+        list with assets tickers - [type]: [list]
+    returns:
+        [type]: [pandas.core.frame.DataFrame]
+    """
+    import pandas as pd
+    import yfinance as yf
+    from datetime import datetime
+
+    remove = {'^BVSP', '^GSPC', 'USDBRL=X'}
+    ticker_list = [ticker for ticker in ticker_list if ticker.strip().upper() not in remove]
+
+    processed_data = []
+    
+    for raw_ticker in ticker_list:
+        # Initialize the yfinance Ticker object
+        ticker_obj = yf.Ticker(raw_ticker)
+        
+        # Extract raw data blocks
+        info = ticker_obj.info
+        
+        # BLINDAGEM: Se o info vier vazio ou nulo, pula o ticker para não quebrar o código
+        if not info or len(info) <= 1:
+            print(f"Aviso: Ticker {raw_ticker} não retornou dados válidos no Yahoo Finance. Pulando...")
+            continue
+            
+        financials = ticker_obj.financials
+        balance_sheet = ticker_obj.balance_sheet
+        cashflow = ticker_obj.cashflow
+        
+        # Coleta das estimativas futuras utilizando o sub-objeto específico de receita
+        try:
+            rev_estimate = ticker_obj.revenue_estimate
+        except Exception:
+            rev_estimate = pd.DataFrame()
+        
+        # Sanitization: Remove the ".SA" suffix for Brazilian stocks
+        clean_ticker = raw_ticker.replace(".SA", "").upper()
+        
+        # Auxiliares para demonstrativos (Extração segura de dataframes do pandas)
+        # Se existir dados, pega o valor mais recente (coluna 0), senão retorna None
+        t_rev = financials.loc["Total Revenue"].iloc[0] if (not financials.empty and "Total Revenue" in financials.index) else None
+        c_rev = financials.loc["Cost Of Revenue"].iloc[0] if (not financials.empty and "Cost Of Revenue" in financials.index) else None
+        g_prof = financials.loc["Gross Profit"].iloc[0] if (not financials.empty and "Gross Profit" in financials.index) else None
+        o_exp = financials.loc["Operating Expense"].iloc[0] if (not financials.empty and "Operating Expense" in financials.index) else None
+        o_inc = financials.loc["Operating Income"].iloc[0] if (not financials.empty and "Operating Income" in financials.index) else None
+        i_exp = financials.loc["Interest Expense"].iloc[0] if (not financials.empty and "Interest Expense" in financials.index) else None
+        n_inc = financials.loc["Net Income"].iloc[0] if (not financials.empty and "Net Income" in financials.index) else None
+        
+        t_assets = balance_sheet.loc["Total Assets"].iloc[0] if (not balance_sheet.empty and "Total Assets" in balance_sheet.index) else None
+        c_assets = balance_sheet.loc["Current Assets"].iloc[0] if (not balance_sheet.empty and "Current Assets" in balance_sheet.index) else None
+        cash_eq = balance_sheet.loc["Cash And Cash Equivalents"].iloc[0] if (not balance_sheet.empty and "Cash And Cash Equivalents" in balance_sheet.index) else None
+        c_liab = balance_sheet.loc["Current Liabilities"].iloc[0] if (not balance_sheet.empty and "Current Liabilities" in balance_sheet.index) else None
+        lt_debt = balance_sheet.loc["Long Term Debt"].iloc[0] if (not balance_sheet.empty and "Long Term Debt" in balance_sheet.index) else None
+        st_equity = balance_sheet.loc["Stockholders Equity"].iloc[0] if (not balance_sheet.empty and "Stockholders Equity" in balance_sheet.index) else None
+        
+        o_cf = cashflow.loc["Operating Cash Flow"].iloc[0] if (not cashflow.empty and "Operating Cash Flow" in cashflow.index) else None
+        cap_ex = cashflow.loc["Capital Expenditure"].iloc[0] if (not cashflow.empty and "Capital Expenditure" in cashflow.index) else None
+        f_cf = cashflow.loc["Financing Cash Flow"].iloc[0] if (not cashflow.empty and "Financing Cash Flow" in cashflow.index) else None
+        i_cf = cashflow.loc["Investing Cash Flow"].iloc[0] if (not cashflow.empty and "Investing Cash Flow" in cashflow.index) else None
+        fr_cf = cashflow.loc["Free Cash Flow"].iloc[0] if (not cashflow.empty and "Free Cash Flow" in cashflow.index) else None
+
+        # Auxiliares para Projeções Futuras (Mapeamento seguro via index '0y' e '+1y')
+        rev_current_year = None
+        rev_next_year = None
+        growth_current_year = None
+        growth_next_year = None
+
+        if rev_estimate is not None and not rev_estimate.empty:
+            # Mapeamento do Ano Atual (representado pela linha '0y')
+            if "0y" in rev_estimate.index:
+                row_0y = rev_estimate.loc["0y"]
+                rev_current_year = row_0y.get("avg") if "avg" in row_0y.index else None
+                growth_current_year = row_0y.get("growth") if "growth" in row_0y.index else None
+            
+            # Mapeamento do Próximo Ano (representado pela linha '+1y')
+            if "+1y" in rev_estimate.index:
+                row_1y = rev_estimate.loc["+1y"]
+                rev_next_year = row_1y.get("avg") if "avg" in row_1y.index else None
+                growth_next_year = row_1y.get("growth") if "growth" in row_1y.index else None
+
+        # Tratamento seguro das datas vindas em formato Unix Timestamp para DD/MM/AAAA
+        mrq_unix = info.get("mostRecentQuarter")
+        most_recent_quarter = datetime.fromtimestamp(mrq_unix).strftime('%d/%m/%Y') if mrq_unix is not None else None
+
+        lfye_unix = info.get("lastFiscalYearEnd")
+        last_fiscal_year_end = datetime.fromtimestamp(lfye_unix).strftime('%d/%m/%Y') if lfye_unix is not None else None
+
+        # Cálculo dinâmico e seguro do Free Cash Flow por Ação
+        raw_fcf = info.get("freeCashflow")
+        raw_shares = info.get("sharesOutstanding")
+        free_cash_flow_per_share = round(raw_fcf / raw_shares, 2) if (raw_fcf is not None and raw_shares) else None
+
+        # 2. Map data into columns using .get() or index lookups
+        record = {
+            # --- IDENTIFICATION ---
+            "ticker": clean_ticker,
+            "companyName": info.get("shortName", info.get("longName", "N/A")),
+            "sector": info.get("sector", "N/A"),
+            "currency": info.get("currency", "N/A"),
+            
+            # --- 1. VALUATION MEASURES ---
+            "trailingPE": round(info.get("trailingPE"), 1) if info.get("trailingPE") is not None else None,
+            "forwardPE": round(info.get("forwardPE"), 1) if info.get("forwardPE") is not None else None,
+            "priceToBook": round(info.get("priceToBook"), 1) if info.get("priceToBook") is not None else None,
+            "enterpriseToRevenue": round(info.get("enterpriseToRevenue"), 1) if info.get("enterpriseToRevenue") is not None else None,
+            "enterpriseToEbitda": round(info.get("enterpriseToEbitda"), 1) if info.get("enterpriseToEbitda") is not None else None,
+            "pegRatio": round(info.get("pegRatio"), 2) if info.get("pegRatio") is not None else None,
+            "priceToSalesTrailing12Months": round(info.get("priceToSalesTrailing12Months"), 1) if info.get("priceToSalesTrailing12Months") is not None else None,
+            "targetMeanPrice": round(info.get("targetMeanPrice"), 2) if info.get("targetMeanPrice") is not None else None,
+            "targetHighPrice": round(info.get("targetHighPrice"), 2) if info.get("targetHighPrice") is not None else None,
+            "targetLowPrice": round(info.get("targetLowPrice"), 2) if info.get("targetLowPrice") is not None else None,
+            "targetMedianPrice": round(info.get("targetMedianPrice"), 2) if info.get("targetMedianPrice") is not None else None,
+            "recommendationMean": round(info.get("recommendationMean"), 0) if info.get("recommendationMean") is not None else None,
+            "recommendationKey": str(info.get("recommendationKey")) if info.get("recommendationKey") is not None else "N/A",
+            "enterpriseValue": round(info.get("enterpriseValue") / 1000000, 0) if info.get("enterpriseValue") is not None else None,
+            
+            # --- 2. MARKET DATA & TRADING ACTIVITY ---
+            "marketCap": round(info.get("marketCap") / 1000000, 0) if info.get("marketCap") is not None else None,
+            "beta": round(info.get("beta"), 2) if info.get("beta") is not None else None,
+            "volume": info.get("volume"),
+            "averageVolume": info.get("averageVolume"),
+            "averageVolume10days": info.get("averageVolume10days"),
+            "fiftyTwoWeekHigh": info.get("fiftyTwoWeekHigh"),
+            "fiftyTwoWeekLow": info.get("fiftyTwoWeekLow"),
+            "fiftyDayAverage": round(info.get("fiftyDayAverage"), 2) if info.get("fiftyDayAverage") is not None else None,
+            "twoHundredDayAverage": round(info.get("twoHundredDayAverage"), 2) if info.get("twoHundredDayAverage") is not None else None,
+            "sharesOutstanding": info.get("sharesOutstanding"),
+            "floatShares": info.get("floatShares"),
+            
+            # --- 3. FINANCIAL HIGHLIGHTS / MARGINS & RETURNS (Converted to %) ---
+            "profitMargins": round(info.get("profitMargins") * 100, 1) if info.get("profitMargins") is not None else None,
+            "ebitdaMargins": round(info.get("ebitdaMargins") * 100, 1) if info.get("ebitdaMargins") is not None else None,
+            "operatingMargins": round(info.get("operatingMargins") * 100, 1) if info.get("operatingMargins") is not None else None,
+            "returnOnAssets": round(info.get("returnOnAssets") * 100, 1) if info.get("returnOnAssets") is not None else None,
+            "returnOnEquity": round(info.get("returnOnEquity") * 100, 1) if info.get("returnOnEquity") is not None else None,
+            
+            # --- 4. DIVIDENDS, PER SHARE & FINANCIAL HEALTH ---
+            # Dividends
+            "dividendYield": round(info.get("dividendYield"), 2) if info.get("dividendYield") is not None else None,
+            "dividendRate": round(info.get("dividendRate"), 2) if info.get("dividendRate") is not None else None,
+            "payoutRatio": round(info.get("payoutRatio") * 100, 0) if info.get("payoutRatio") is not None else None,
+            "fiveYearAvgDividendYield": round(info.get("fiveYearAvgDividendYield"), 1) if info.get("fiveYearAvgDividendYield") is not None else None,
+            # Per Share
+            "trailingEps": round(info.get("trailingEps"), 1) if info.get("trailingEps") is not None else None,
+            "forwardEps": round(info.get("forwardEps"), 1) if info.get("forwardEps") is not None else None,
+            "bookValue": round(info.get("bookValue"), 2) if info.get("bookValue") is not None else None,
+            # Balance Sheet Summary & Liquidity
+            "debtToEquity": round(info.get("debtToEquity"), 2) if info.get("debtToEquity") is not None else None,
+            "currentRatio": round(info.get("currentRatio"), 2) if info.get("currentRatio") is not None else None,
+            "quickRatio": round(info.get("quickRatio"), 2) if info.get("quickRatio") is not None else None,
+            "totalCash": round(info.get("totalCash") / 1000000, 0) if info.get("totalCash") is not None else None,
+            "totalDebt": round(info.get("totalDebt") / 1000000, 0) if info.get("totalDebt") is not None else None,
+            
+            # --- 5. OPERATIONAL DATA (TTM / Income Statement Summary) ---
+            "totalRevenue": round(info.get("totalRevenue") / 1000000, 0) if info.get("totalRevenue") is not None else None,
+            "revenueGrowth": round(info.get("revenueGrowth") * 100, 1) if info.get("revenueGrowth") is not None else None,
+            "ebitda": round(info.get("ebitda") / 1000000, 0) if info.get("ebitda") is not None else None,
+            "grossProfits": round(info.get("grossProfits") / 1000000, 0) if info.get("grossProfits") is not None else None,
+            "netIncomeToCommon": round(info.get("netIncomeToCommon") / 1000000, 0) if info.get("netIncomeToCommon") is not None else None,
+            "mostRecentQuarter": most_recent_quarter,
+            
+            # --- 6. FULL FINANCIAL STATEMENTS ---
+            # Income Statement (financials)
+            "Total Revenue": round(t_rev / 1000000, 0) if t_rev is not None else None,
+            "Cost Of Revenue": round(c_rev / 1000000, 0) if c_rev is not None else None,
+            "Gross Profit": round(g_prof / 1000000, 0) if g_prof is not None else None,
+            "Operating Expense": round(o_exp / 1000000, 0) if o_exp is not None else None,
+            "Operating Income": round(o_inc / 1000000, 0) if o_inc is not None else None,
+            "Interest Expense": round(i_exp / 1000000, 0) if i_exp is not None else None,
+            "Net Income": round(n_inc / 1000000, 0) if n_inc is not None else None,
+            
+            # Balance Sheet
+            "Total Assets": round(t_assets / 1000000, 0) if t_assets is not None else None,
+            "Current Assets": round(c_assets / 1000000, 0) if c_assets is not None else None,
+            "Cash And Cash Equivalents": round(cash_eq / 1000000, 0) if cash_eq is not None else None,
+            "Current Liabilities": round(c_liab / 1000000, 0) if c_liab is not None else None,
+            "Long Term Debt": round(lt_debt / 1000000, 0) if lt_debt is not None else None,
+            "Stockholders Equity": round(st_equity / 1000000, 0) if st_equity is not None else None,
+            
+            # Cash Flow
+            "Operating Cash Flow": round(o_cf / 1000000, 0) if o_cf is not None else None,
+            "Capital Expenditure": round(cap_ex / 1000000, 0) if cap_ex is not None else None,
+            "Financing Cash Flow": round(f_cf / 1000000, 0) if f_cf is not None else None,
+            "Investing Cash Flow": round(i_cf / 1000000, 0) if i_cf is not None else None,
+            "Free Cash Flow": round(fr_cf / 1000000, 0) if fr_cf is not None else None,
+            
+            # Revenue & Cash Details
+            "totalCashPerShare": round(info.get("totalCashPerShare"), 2) if info.get("totalCashPerShare") is not None else None,
+            "revenuePerShare": round(info.get("revenuePerShare"), 2) if info.get("revenuePerShare") is not None else None,
+            "earningsQuarterlyGrowth": round(info.get("earningsQuarterlyGrowth") * 100, 1) if info.get("earningsQuarterlyGrowth") is not None else None,
+            "freeCashFlowPerShare": free_cash_flow_per_share,  # <--- SUBSTÍTUIDO E CALCULADO CONFORME SOLICITADO
+            "lastFiscalYearEnd": last_fiscal_year_end,
+            
+            # --- 7. SHAREHOLDERS & SHORT INTEREST ---
+            "heldPercentInsiders": round(info.get("heldPercentInsiders") * 100, 1) if info.get("heldPercentInsiders") is not None else None,
+            "heldPercentInstitutions": round(info.get("heldPercentInstitutions") * 100, 1) if info.get("heldPercentInstitutions") is not None else None,
+            "shortPercentOfFloat": round(info.get("shortPercentOfFloat") * 100, 1) if info.get("shortPercentOfFloat") is not None else None,
+            "shortRatio": round(info.get("shortRatio"), 2) if info.get("shortRatio") is not None else None,
+            
+            # --- 8. DIVIDENDS & CORPORATE EVENTS ---
+            "exDividendDate": datetime.fromtimestamp(info.get("exDividendDate")).strftime('%d/%m/%Y') if info.get("exDividendDate") is not None else None,
+
+            # --- 9. FUTURE REVENUE FORECASTS (Consensus Analysis via revenue_estimate) ---
+            "forwardRevenueCurrentYear": round(rev_current_year / 1000000, 0) if rev_current_year is not None else None,
+            "forwardRevenueNextYear": round(rev_next_year / 1000000, 0) if rev_next_year is not None else None,
+            "forwardRevenueGrowthCurrentYear": round(growth_current_year * 100, 1) if (growth_current_year is not None and abs(growth_current_year) < 1.0) else (round(growth_current_year, 1) if growth_current_year is not None else None),
+            "forwardRevenueGrowthNextYear": round(growth_next_year * 100, 1) if (growth_next_year is not None and abs(growth_next_year) < 1.0) else (round(growth_next_year, 1) if growth_next_year is not None else None)
+        }
+        
+        processed_data.append(record)
+
+    # 3. Create the final DataFrame (if df is empty, it creates one with structured columns)
+    if processed_data:
+        df = pd.DataFrame(processed_data)
+        df = df.fillna("")
+    else:
+        # returns an empty df with columns in order to don't break in sheets
+        df = pd.DataFrame(columns=["ticker", "companyName", "sector", "currency"])
+
+    return df
+
+
+# %%
+def yfEtf(ticker_list):
+    """
+    function extract yahoo finance ETF tickers data
+    args:
+        list with assets tickers - [type]: [list]
+    returns:
+        [type]: [pandas.core.frame.DataFrame]
+    """
+    import pandas as pd
+    import yfinance as yf
+    from datetime import datetime
+
+    remove = {'^BVSP', '^GSPC', 'USDBRL=X'}
+    ticker_list = [ticker for ticker in ticker_list if ticker.strip().upper() not in remove]
+
+    processed_data = []
+    
+    for raw_ticker in ticker_list:
+        # Initialize the yfinance Ticker object
+        ticker_obj = yf.Ticker(raw_ticker)
+        
+        # Extract raw data blocks
+        info = ticker_obj.info
+        
+        # BLINDAGEM: Se o info vier vazio ou nulo, pula o ticker para não quebrar o código
+        if not info or len(info) <= 1:
+            print(f"Aviso: Ticker {raw_ticker} não retornou dados válidos no Yahoo Finance. Pulando...")
+            continue
+            
+        # Sanitization: Remove the ".SA" suffix for Brazilian stocks
+        clean_ticker = raw_ticker.replace(".SA", "").upper()
+        
+        # Tratamento seguro de datas vindas em formato Unix Timestamp para DD/MM/AAAA
+        inception_unix = info.get("fundInceptionDate")
+        fund_inception_date = datetime.fromtimestamp(inception_unix).strftime('%d/%m/%Y') if inception_unix is not None else None
+
+        # 2. Map data into columns using .get()
+        record = {
+            # --- IDENTIFICATION & GENERAL ---
+            "ticker": clean_ticker,
+            "companyName": info.get("longName", info.get("shortName", "N/A")),
+            "fundFamily": info.get("fundFamily", "N/A"),
+            "currency": info.get("currency", "N/A"),
+            "fundInceptionDate": fund_inception_date,
+            
+            # --- FUND METRICS (AUM & NAV) ---
+            # Transforma o Patrimônio Líquido (totalAssets) para Milhões
+            "totalAssets_Millions": round(info.get("totalAssets") / 1000000, 2) if info.get("totalAssets") is not None else None,
+            "navPrice": round(info.get("navPrice"), 2) if info.get("navPrice") is not None else None,
+            
+            # --- PORTFOLIO VALUATION MEASURES (AVERAGES) ---
+            "priceToBook": round(info.get("priceToBook"), 1) if info.get("priceToBook") is not None else None,
+            
+            # --- MARKET DATA & TRADING ACTIVITY ---
+            "beta3Year": round(info.get("beta3Year"), 2) if info.get("beta3Year") is not None else None,
+            "volume": info.get("volume"),
+            "averageVolume": info.get("averageVolume"),
+            "averageVolume10days": info.get("averageVolume10days"),
+            "fiftyTwoWeekHigh": info.get("fiftyTwoWeekHigh"),
+            "fiftyTwoWeekLow": info.get("fiftyTwoWeekLow"),
+            "fiftyDayAverage": round(info.get("fiftyDayAverage"), 2) if info.get("fiftyDayAverage") is not None else None,
+            "twoHundredDayAverage": round(info.get("twoHundredDayAverage"), 2) if info.get("twoHundredDayAverage") is not None else None,
+            
+            # --- DIVIDENDS & PERFORMANCE ---
+            # Multiplica por 100 caso venha em formato decimal para padronizar em %
+            "dividendYield": round(info.get("yield") * 100, 2) if info.get("yield") is not None else None,
+            "threeYearAverageReturn": round(info.get("threeYearAverageReturn") * 100, 2) if info.get("threeYearAverageReturn") is not None else None,
+            "fiveYearAverageReturn": round(info.get("fiveYearAverageReturn") * 100, 2) if info.get("fiveYearAverageReturn") is not None else None
+        }
+        
+        processed_data.append(record)
+
+    # 3. Create the final DataFrame (if df is empty, it creates one with structured columns)
+    if processed_data:
+        df = pd.DataFrame(processed_data)
+        df = df.fillna("")
+    else:
+        # returns an empty df with columns in order to don't break in sheets
+        df = pd.DataFrame(columns=["ticker", "companyName", "fundFamily", "currency"])
+
+    return df
+
+
+# %%
+def yfEtfant(ticker_list):
+    """
+    function extract yahoo finance ETF tickers data
+    args:
+        list with assets tickers - [type]: [list]
+    returns:
+        [type]: [pandas.core.frame.DataFrame]
+    """
+    import pandas as pd
+    import yfinance as yf
+    from datetime import datetime
+
+    remove = {'^BVSP', '^GSPC', 'USDBRL=X'}
+    ticker_list = [ticker for ticker in ticker_list if ticker.strip().upper() not in remove]
+
+    processed_data = []
+    
+    for raw_ticker in ticker_list:
+        # Initialize the yfinance Ticker object
+        ticker_obj = yf.Ticker(raw_ticker)
+        
+        # Extract raw data blocks
+        info = ticker_obj.info
+        
+        # BLINDAGEM: Se o info vier vazio ou nulo, pula o ticker para não quebrar o código
+        if not info or len(info) <= 1:
+            print(f"Aviso: Ticker {raw_ticker} não retornou dados válidos no Yahoo Finance. Pulando...")
+            continue
+            
+        # Sanitization: Remove the ".SA" suffix for Brazilian stocks
+        clean_ticker = raw_ticker.replace(".SA", "").upper()
+        
+        # Tratamento seguro de datas vindas em formato Unix Timestamp para DD/MM/AAAA
+        inception_unix = info.get("fundInceptionDate")
+        fund_inception_date = datetime.fromtimestamp(inception_unix).strftime('%d/%m/%Y') if inception_unix is not None else None
+
+        # 2. Map data into columns using .get()
+        record = {
+            # --- IDENTIFICATION & GENERAL ---
+            "ticker": clean_ticker,
+            "companyName": info.get("longName", info.get("shortName", "N/A")),
+            "fundFamily": info.get("fundFamily", "N/A"),
+            "currency": info.get("currency", "N/A"),
+            "fundInceptionDate": fund_inception_date,
+            "quoteType": info.get("quoteType", "N/A"),
+            
+            # --- FUND METRICS (AUM & NAV) ---
+            # Transforma o Patrimônio Líquido (totalAssets) para Milhões
+            "totalAssets_Millions": round(info.get("totalAssets") / 1000000, 2) if info.get("totalAssets") is not None else None,
+            "navPrice": round(info.get("navPrice"), 2) if info.get("navPrice") is not None else None,
+            
+            # --- FEES & COSTS ---
+            # A taxa de administração geralmente vem em decimal (ex: 0.0003 para 0.03%), convertida aqui para %
+            "expenseRatio_Percent": round(info.get("feesExpensesInvestmentTotal") * 100, 3) if info.get("feesExpensesInvestmentTotal") is not None else None,
+            
+            # --- PORTFOLIO VALUATION MEASURES (AVERAGES) ---
+            # Múltiplos médios ponderados das empresas que compõem o ETF
+            "trailingPE": round(info.get("priceToEarnings"), 1) if info.get("priceToEarnings") is not None else None,
+            "priceToBook": round(info.get("priceToBook"), 1) if info.get("priceToBook") is not None else None,
+            "priceToSales": round(info.get("priceToSales"), 1) if info.get("priceToSales") is not None else None,
+            
+            # --- MARKET DATA & TRADING ACTIVITY ---
+            "beta3Year": round(info.get("beta3Year"), 2) if info.get("beta3Year") is not None else None,
+            "volume": info.get("volume"),
+            "averageVolume": info.get("averageVolume"),
+            "averageVolume10days": info.get("averageVolume10days"),
+            "fiftyTwoWeekHigh": info.get("fiftyTwoWeekHigh"),
+            "fiftyTwoWeekLow": info.get("fiftyTwoWeekLow"),
+            "fiftyDayAverage": round(info.get("fiftyDayAverage"), 2) if info.get("fiftyDayAverage") is not None else None,
+            "twoHundredDayAverage": round(info.get("twoHundredDayAverage"), 2) if info.get("twoHundredDayAverage") is not None else None,
+            
+            # --- DIVIDENDS & PERFORMANCE ---
+            # Multiplica por 100 caso venha em formato decimal para padronizar em %
+            "dividendYield": round(info.get("yield") * 100, 2) if info.get("yield") is not None else None,
+            "threeYearAverageReturn": round(info.get("threeYearAverageReturn") * 100, 2) if info.get("threeYearAverageReturn") is not None else None,
+            "fiveYearAverageReturn": round(info.get("fiveYearAverageReturn") * 100, 2) if info.get("fiveYearAverageReturn") is not None else None,
+            
+            # --- RISK METRICS (TTM) ---
+            "sharpeRatio": round(info.get("sharpeRatio"), 2) if info.get("sharpeRatio") is not None else None,
+            "annualReportAlpha": round(info.get("annualReportAlpha"), 2) if info.get("annualReportAlpha") is not None else None
+        }
+        
+        processed_data.append(record)
+
+    # 3. Create the final DataFrame (if df is empty, it creates one with structured columns)
+    if processed_data:
+        df = pd.DataFrame(processed_data)
+        df = df.fillna("")
+    else:
+        # returns an empty df with columns in order to don't break in sheets
+        df = pd.DataFrame(columns=["ticker", "companyName", "fundFamily", "currency"])
+
+    return df
