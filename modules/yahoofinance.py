@@ -24,7 +24,7 @@ def yfSeries(list, period):
     """
 
     # series reading
-    df = yf.download(list, period=period, auto_adjust=False)['Close']
+    df = yf.download(list, period=period, auto_adjust=True)['Close']
     # remove timezone from index
     df.index = pd.to_datetime(df.index).tz_localize(None)
     # Excluding .SA, renaming ^BVSP to IBOV, ^GSPC to SP500
